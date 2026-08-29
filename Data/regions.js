@@ -1,11 +1,12 @@
 const fs = require('fs');
 const path = require('path');
+const { getRegionsCanonCollection } = require('./mongo.js');
 
-// Données statiques des régions, éditables directement dans Data/regions.json
-// (pas besoin de toucher au code pour changer un nom, une capitale, un statut...).
-// Le champ "key" de chaque région est l'identifiant stable utilisé par regionStore.js
-// (statut/instabilité modifiés, historique...) : ne JAMAIS changer une valeur "key"
-// existante dans le JSON, sinon l'état déjà enregistré pour cette région en base est perdu.
+// Valeur de secours au démarrage : le fichier JSON historique (voir
+// initRegions ci-dessous). Le champ "key" de chaque région est l'identifiant
+// stable utilisé par regionStore.js (statut/instabilité modifiés,
+// historique...) : ne JAMAIS changer une valeur "key" existante, sinon l'état
+// déjà enregistré pour cette région en base est perdu.
 const REGIONS = JSON.parse(fs.readFileSync(path.join(__dirname, 'json', 'regions.json'), 'utf-8'));
 
 function slugify(name) {
@@ -44,4 +45,30 @@ function getRegionArmyLines(armee) {
   return lines;
 }
 
-module.exports = { REGIONS, resolveRegion, getRegionArmyLines, slugify };
+/**
+ * Charge la fiche "canon" de chaque région depuis MongoDB (collection
+ * "regions_canon") — même principe que initMaisons() dans Data/maisons.js.
+ * À appeler (et attendre) tout au début du démarrage, avant que quoi que ce
+ * soit ne lise le contenu de REGIONS.
+ */
+async function initRegions() {
+  try {
+    const col = await getRegionsCanonCollection();
+    let docs = await col.find({}).toArray();
+
+    if (docs.length === 0) {
+      const seed = REGIONS.map(r => ({ ...r, _id: r.key }));
+      if (seed.length) await col.insertMany(seed);
+      docs = seed;
+    }
+
+    REGIONS.length = 0;
+    docs.forEach(({ _id, ...rest }) => REGIONS.push({ key: _id, ...rest }));
+    console.log(`✅ ${REGIONS.length} région(s) chargée(s) depuis MongoDB.`);
+  } catch (err) {
+    console.error('❌ Impossible de charger les régions depuis MongoDB, utilisation du JSON local en secours :', err.message);
+  }
+  return REGIONS;
+}
+
+module.exports = { REGIONS, resolveRegion, getRegionArmyLines, slugify, initRegions };

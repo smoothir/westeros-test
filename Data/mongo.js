@@ -9,6 +9,8 @@ const COLLECTION_TUPPERS = 'tuppers';
 const COLLECTION_TUPPER_MESSAGES = 'tupper_messages';
 const COLLECTION_GENERAL_TICKETS = 'general_tickets';
 const COLLECTION_MAISONS_STATE = 'maisons_state';
+const COLLECTION_MAISONS_CANON = 'maisons_canon';
+const COLLECTION_REGIONS_CANON = 'regions_canon';
 const COLLECTION_SERVER_STATE = 'server_state';
 const COLLECTION_RUMEURS = 'rumeurs';
 const COLLECTION_XP = 'xp';
@@ -155,6 +157,27 @@ async function getRegionsStateCollection() {
   return database.collection('regions_state');
 }
 
+/**
+ * Collection "maisons_canon" : la fiche OFFICIELLE de chaque maison (nom, type,
+ * région, croyance, unité spéciale, armée, renommée/argent de base). C'est la
+ * source de vérité partagée par le bot ET le site admin — remplace les deux
+ * copies séparées de Data/json/maisons.json qui se désynchronisaient.
+ */
+async function getMaisonsCanonCollection() {
+  const database = await connect();
+  return database.collection(COLLECTION_MAISONS_CANON);
+}
+
+/**
+ * Collection "regions_canon" : la fiche OFFICIELLE de chaque région (maison
+ * dirigeante, capitale, climat, spécialité, richesse, statut politique,
+ * instabilité, armée). Même principe que maisons_canon ci-dessus.
+ */
+async function getRegionsCanonCollection() {
+  const database = await connect();
+  return database.collection(COLLECTION_REGIONS_CANON);
+}
+
 module.exports = {
   connect,
   getAvatarsCollection,
@@ -170,4 +193,6 @@ module.exports = {
   getProfilsCollection,
   getMaisonsStateCollection,
   getRegionsStateCollection,
+  getMaisonsCanonCollection,
+  getRegionsCanonCollection,
 };

@@ -2,12 +2,11 @@
 // Réutilise directement les modules du bot (Data/...) pour ne jamais dupliquer la
 // logique ni risquer que le site et le bot voient des données différentes.
 require('dotenv').config();
-const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
-const { MAISONS, getArmeeLines } = require('../Data/maisons.js');
-const { REGIONS, getRegionArmyLines } = require('../Data/regions.js');
+const { MAISONS, getArmeeLines, initMaisons } = require('../Data/maisons.js');
+const { REGIONS, getRegionArmyLines, initRegions } = require('../Data/regions.js');
 const {
   getMaisonState,
   setLeader,
@@ -28,25 +27,30 @@ const {
 const {
   getMaisonsStateCollection,
   getRegionsStateCollection,
+  getMaisonsCanonCollection,
+  getRegionsCanonCollection,
 } = require('../Data/mongo.js');
 
 const app = express();
 app.use(express.json());
 
-// --- Écriture des données de base sur disque -------------------------------
-// Les fiches de maisons/régions (Data/json/*.json) sont la source de vérité
-// "canon". Le site peut maintenant les éditer intégralement : on modifie le
-// tableau en mémoire (MAISONS / REGIONS, déjà chargé par Data/maisons.js et
-// Data/regions.js) puis on réécrit le fichier JSON correspondant, pour que
-// le bot voie les mêmes données au prochain redémarrage.
-const MAISONS_JSON_PATH = path.join(__dirname, '..', 'Data', 'json', 'maisons.json');
-const REGIONS_JSON_PATH = path.join(__dirname, '..', 'Data', 'json', 'regions.json');
-
-function saveMaisonsToDisk() {
-  fs.writeFileSync(MAISONS_JSON_PATH, `${JSON.stringify(MAISONS, null, 2)}\n`, 'utf-8');
+// --- Écriture des données de base dans MongoDB ------------------------------
+// Les fiches "canon" de maisons/régions vivent maintenant dans MongoDB
+// (collections maisons_canon / regions_canon), chargées au démarrage par
+// initMaisons()/initRegions() ci-dessous. Le site les édite en mémoire
+// (tableau MAISONS / REGIONS, partagé avec Data/maisons.js et
+// Data/regions.js) puis persiste le document modifié dans Mongo — le bot,
+// qui lit la même base, voit la modification en direct (aucun redémarrage,
+// aucun fichier à recopier).
+async function persistMaisonCanon(maison) {
+  const col = await getMaisonsCanonCollection();
+  const { key, ...rest } = maison;
+  await col.replaceOne({ _id: key }, { _id: key, ...rest }, { upsert: true });
 }
-function saveRegionsToDisk() {
-  fs.writeFileSync(REGIONS_JSON_PATH, `${JSON.stringify(REGIONS, null, 2)}\n`, 'utf-8');
+async function persistRegionCanon(region) {
+  const col = await getRegionsCanonCollection();
+  const { key, ...rest } = region;
+  await col.replaceOne({ _id: key }, { _id: key, ...rest }, { upsert: true });
 }
 function num(v, fallback = 0) {
   if (v === '' || v === null || v === undefined) return fallback;
@@ -160,7 +164,7 @@ app.patch('/api/maisons/:key/base', async (req, res) => {
       maison.armee = a;
     }
 
-    saveMaisonsToDisk();
+    await persistMaisonCanon(maison);
     res.json(await serializeMaison(maison));
   } catch (err) {
     console.error(err);
@@ -262,7 +266,7 @@ app.patch('/api/regions/:key/base', async (req, res) => {
       region.armee = a;
     }
 
-    saveRegionsToDisk();
+    await persistRegionCanon(region);
     res.json(await serializeRegion(region));
   } catch (err) {
     console.error(err);
@@ -366,7 +370,15 @@ app.post('/api/sync', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || process.env.WEB_PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`✅ Site admin lancé sur http://localhost:${PORT}`);
-});
+// On attend que les fiches maisons/régions soient chargées depuis MongoDB
+// avant d'ouvrir le port : ça évite de répondre avec des données vides sur
+// les toutes premières requêtes juste après un démarrage.
+(async () => {
+  await initMaisons();
+  await initRegions();
+
+  const PORT = process.env.PORT || process.env.WEB_PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`✅ Site admin lancé sur http://localhost:${PORT}`);
+  });
+})();
