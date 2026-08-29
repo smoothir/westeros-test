@@ -84,6 +84,12 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Le logo vit à la racine du projet (à côté du .env), pas dans web/public,
+// donc il a besoin de sa propre route pour être accessible depuis le navigateur.
+app.get('/logo.png', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'logo.png'));
+});
+
 // ---------------------------------------------------------------------------
 // MAISONS
 // ---------------------------------------------------------------------------
@@ -306,7 +312,10 @@ app.patch('/api/profils/:id', async (req, res) => {
     const profile = await getProfile(req.params.id);
     if (!profile) return res.status(404).json({ error: 'Profil inconnu' });
 
-    const allowed = ['statut', 'gardePersonnelle', 'boursePersonnelle', 'allies', 'rivaux', 'renommee', 'notes'];
+    const allowed = [
+      'statut', 'gardePersonnelle', 'boursePersonnelle', 'allies', 'rivaux', 'renommee', 'notes',
+      'maisonName', 'regionName', 'roleName',
+    ];
     const fields = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
@@ -321,6 +330,37 @@ app.patch('/api/profils/:id', async (req, res) => {
 });
 
 app.get('/api/statuts', (req, res) => res.json(STATUTS));
+
+// Listes déroulantes (Titres / Régions / Maisons) utilisées côté Discord —
+// permet au site d'utiliser exactement les mêmes valeurs plutôt que du texte libre.
+app.get('/api/lists', (req, res) => {
+  const { TITRES, REGIONS: REGIONS_DISCORD, MAISONS: MAISONS_DISCORD } = require('../Data/discordLists.js');
+  res.json({
+    titres: TITRES.map(t => t.name),
+    regions: REGIONS_DISCORD.map(r => r.name),
+    maisons: MAISONS_DISCORD.map(m => m.name),
+  });
+});
+
+// Portrait (faceclaim) d'un personnage, servi à la volée depuis Mongo (avatars
+// stockés en base64) — pas chargé dans la liste des profils pour rester léger.
+app.get('/api/profils/:id/avatar', async (req, res) => {
+  try {
+    const profile = await getProfile(req.params.id);
+    if (!profile || !profile.faceclaim) return res.status(404).end();
+
+    const { findAvatar } = require('../Data/avatarStore.js');
+    const avatar = await findAvatar(profile.faceclaim);
+    if (!avatar) return res.status(404).end();
+
+    res.set('Content-Type', avatar.contentType || 'image/png');
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.send(Buffer.from(avatar.imageBase64, 'base64'));
+  } catch (err) {
+    console.error(err);
+    res.status(500).end();
+  }
+});
 
 // ---------------------------------------------------------------------------
 // SYNCHRONISATION

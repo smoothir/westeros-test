@@ -7,6 +7,7 @@
 const state = {
   cache: { maisons: [], regions: [], profils: [] },
   statuts: [],
+  listes: { titres: [], regions: [], maisons: [] },
   collectionActuelle: null,
   itemActuel: null, // { collection, id }
 };
@@ -32,6 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fetch('/api/regions').then(r => r.json()).then(d => { state.cache.regions = d; majCompteur('regions', d.length); }),
     fetch('/api/profils').then(r => r.json()).then(d => { state.cache.profils = d; majCompteur('profils', d.length); }),
     fetch('/api/statuts').then(r => r.json()).then(d => { state.statuts = d; }),
+    fetch('/api/lists').then(r => r.json()).then(d => { state.listes = d; }),
   ]).then(() => setStatutConnexion(true));
 });
 
@@ -216,7 +218,9 @@ function panneauMaison(m) {
   const estClan = m.armee && m.armee.guerriers !== undefined;
   const optionsType = TYPES_MAISON.map(t => `<option value="${t.valeur}" ${m.type === t.valeur ? 'selected' : ''}>${t.label}</option>`).join('')
     + (TYPES_MAISON.some(t => t.valeur === m.type) ? '' : `<option value="${escapeAttr(m.type)}" selected>${escapeHtml(m.type)}</option>`);
-  const regionsDatalist = [...new Set(state.cache.regions.map(r => r.nom))];
+  const regionsOptions = [...new Set(state.cache.regions.map(r => r.nom))];
+  const optionsRegionMaison = regionsOptions.map(n => `<option value="${escapeAttr(n)}" ${m.region === n ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')
+    + (regionsOptions.includes(m.region) ? '' : `<option value="${escapeAttr(m.region || '')}" selected>${escapeHtml(m.region || '(vide)')}</option>`);
 
   const armeeHTML = estClan ? `
       <div class="armee-grid">
@@ -243,8 +247,7 @@ function panneauMaison(m) {
         <select id="f-type">${optionsType}</select>
       </div>
       <div class="champ"><label for="f-region">Région</label>
-        <input type="text" id="f-region" value="${escapeAttr(m.region)}" list="dl-regions">
-        <datalist id="dl-regions">${regionsDatalist.map(r => `<option value="${escapeAttr(r)}">`).join('')}</datalist>
+        <select id="f-region">${optionsRegionMaison}</select>
       </div>
       <div class="champ"><label for="f-croyance">Croyance</label><input type="text" id="f-croyance" value="${escapeAttr(m.croyance)}"></div>
       <div class="champ"><label for="f-uniteSpeciale">Unité spéciale</label><input type="text" id="f-uniteSpeciale" value="${escapeAttr(m.uniteSpeciale)}"></div>
@@ -273,7 +276,12 @@ function panneauMaison(m) {
 
 function panneauRegion(r) {
   const noArmee = r.armee === null || r.armee === undefined;
-  const maisonsDatalist = [...new Set(state.cache.maisons.map(m => m.nom))];
+  const maisonsOptions = [...new Set(state.cache.maisons.map(m => m.nom))];
+  const specialesDirigeante = ['Aucune', 'La Couronne (aucune maison fixe)'];
+  const toutesOptionsDirigeante = [...specialesDirigeante, ...maisonsOptions];
+  const optionsMaisonDirigeante = toutesOptionsDirigeante
+    .map(n => `<option value="${escapeAttr(n)}" ${r.maisonDirigeante === n ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')
+    + (toutesOptionsDirigeante.includes(r.maisonDirigeante) ? '' : `<option value="${escapeAttr(r.maisonDirigeante || '')}" selected>${escapeHtml(r.maisonDirigeante || '(vide)')}</option>`);
   const climatsDatalist = [...new Set(state.cache.regions.map(x => x.climat).filter(Boolean))];
   const optionsRichesse = NIVEAUX_RICHESSE.map(niv => `<option value="${niv}" ${r.richesse === niv ? 'selected' : ''}>${niv}</option>`).join('')
     + (NIVEAUX_RICHESSE.includes(r.richesse) ? '' : `<option value="${escapeAttr(r.richesse)}" selected>${escapeHtml(r.richesse)}</option>`);
@@ -283,8 +291,7 @@ function panneauRegion(r) {
     <div class="grille-champs">
       <div class="champ"><label for="f-nom">Nom de la région</label><input type="text" id="f-nom" value="${escapeAttr(r.nom)}"></div>
       <div class="champ"><label for="f-maisonDirigeante">Maison dirigeante</label>
-        <input type="text" id="f-maisonDirigeante" value="${escapeAttr(r.maisonDirigeante || '')}" list="dl-maisons">
-        <datalist id="dl-maisons"><option value="Aucune"><option value="La Couronne">${maisonsDatalist.map(n => `<option value="${escapeAttr(n)}">`).join('')}</datalist>
+        <select id="f-maisonDirigeante">${optionsMaisonDirigeante}</select>
       </div>
       <div class="champ"><label for="f-capitale">Capitale</label><input type="text" id="f-capitale" value="${escapeAttr(r.capitale || '')}"></div>
       <div class="champ"><label for="f-climat">Climat</label>
@@ -327,14 +334,27 @@ function panneauProfil(p) {
   const optionsStatut = (state.statuts.length ? state.statuts : ['Vivant', 'Blessé', 'Prisonnier', 'Mort'])
     .map(s => `<option value="${s}" ${p.statut === s ? 'selected' : ''}>${s}</option>`).join('');
 
+  const optionsMaison = state.listes.maisons
+    .map(m => `<option value="${escapeAttr(m)}" ${p.maisonName === m ? 'selected' : ''}>${m}</option>`).join('');
+  const optionsRegion = state.listes.regions
+    .map(r => `<option value="${escapeAttr(r)}" ${p.regionName === r ? 'selected' : ''}>${r}</option>`).join('');
+  const optionsRole = state.listes.titres
+    .map(t => `<option value="${escapeAttr(t)}" ${p.roleName === t ? 'selected' : ''}>${t}</option>`).join('');
+
   return `
-    <div class="section-titre">🪶 Identité (lecture seule)</div>
+    <div class="portrait-profil">
+      <img src="/api/profils/${encodeURIComponent(p._id)}/avatar" alt="Portrait de ${escapeAttr(p.nomPrenom || '')}"
+           onerror="this.closest('.portrait-profil').classList.add('sans-image')">
+      <div class="portrait-fallback">🖼️</div>
+    </div>
+
+    <div class="section-titre">🪶 Identité</div>
     <div class="grille-champs">
       <div class="champ"><label>Nom</label><input type="text" value="${escapeAttr(p.nomPrenom || '')}" disabled></div>
       <div class="champ"><label>Surnom</label><input type="text" value="${escapeAttr(p.surnom || '')}" disabled></div>
-      <div class="champ"><label>Maison</label><input type="text" value="${escapeAttr(p.maisonName || '')}" disabled></div>
-      <div class="champ"><label>Région</label><input type="text" value="${escapeAttr(p.regionName || '')}" disabled></div>
-      <div class="champ"><label>Rôle</label><input type="text" value="${escapeAttr(p.roleName || '')}" disabled></div>
+      <div class="champ"><label for="f-maisonName">Maison</label><select id="f-maisonName">${optionsMaison}</select></div>
+      <div class="champ"><label for="f-regionName">Région</label><select id="f-regionName">${optionsRegion}</select></div>
+      <div class="champ"><label for="f-roleName">Rôle</label><select id="f-roleName">${optionsRole}</select></div>
     </div>
 
     <div class="section-titre">✒️ Fiche modifiable</div>
@@ -418,6 +438,7 @@ async function sauvegarder() {
       await fetchJSON(`/api/profils/${encodeURIComponent(id)}`, {
         statut: val('f-statut'), renommee: val('f-renommee'), gardePersonnelle: val('f-gardePersonnelle'),
         boursePersonnelle: val('f-boursePersonnelle'), allies: val('f-allies'), rivaux: val('f-rivaux'), notes: val('f-notes'),
+        maisonName: val('f-maisonName'), regionName: val('f-regionName'), roleName: val('f-roleName'),
       }, 'PATCH');
     }
 
