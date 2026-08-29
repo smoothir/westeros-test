@@ -1,175 +1,497 @@
-// Site admin Westeros — ce fichier tourne dans le navigateur.
-// Pas d'IP à configurer : le site et l'API sont servis par le même serveur
-// (web/server.js), donc on appelle simplement "/api/..." (chemin relatif).
+// =============================================================================
+// Westeros Admin — logique front
+// Site et API sur le même serveur : tous les appels utilisent des chemins
+// relatifs ("/api/..."), pas d'IP à configurer.
+// =============================================================================
 
-let etatActuel = { collection: null, data: [] };
+const state = {
+  cache: { maisons: [], regions: [], profils: [] },
+  statuts: [],
+  collectionActuelle: null,
+  itemActuel: null, // { collection, id }
+};
 
+const TYPES_MAISON = [
+  { valeur: 'majeure', label: 'Majeure' },
+  { valeur: 'mineure', label: 'Mineure' },
+  { valeur: 'clan', label: 'Clan' },
+];
+const NIVEAUX_RICHESSE = ['Très faible', 'Faible', 'Moyenne', 'Élevée', 'Très élevée'];
+
+// -----------------------------------------------------------------------
+// Démarrage
+// -----------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', () => {
+  genererBraises();
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') fermerPanneau(); });
+
+  // Préchargement silencieux (pour les compteurs de la sidebar et les
+  // menus déroulants — ex: liste des maisons quand on édite une région).
+  Promise.allSettled([
+    fetch('/api/maisons').then(r => r.json()).then(d => { state.cache.maisons = d; majCompteur('maisons', d.length); }),
+    fetch('/api/regions').then(r => r.json()).then(d => { state.cache.regions = d; majCompteur('regions', d.length); }),
+    fetch('/api/profils').then(r => r.json()).then(d => { state.cache.profils = d; majCompteur('profils', d.length); }),
+    fetch('/api/statuts').then(r => r.json()).then(d => { state.statuts = d; }),
+  ]).then(() => setStatutConnexion(true));
+});
+
+function genererBraises() {
+  const conteneur = document.getElementById('particules');
+  const n = window.innerWidth < 700 ? 10 : 22;
+  for (let i = 0; i < n; i++) {
+    const b = document.createElement('div');
+    b.className = 'braise';
+    b.style.setProperty('--s', `${2 + Math.random() * 4}px`);
+    b.style.left = `${Math.random() * 100}%`;
+    b.style.setProperty('--dur-fly', `${9 + Math.random() * 10}s`);
+    b.style.setProperty('--delay', `${Math.random() * 12}s`);
+    b.style.setProperty('--drift', `${(Math.random() - 0.5) * 120}px`);
+    conteneur.appendChild(b);
+  }
+}
+
+function setStatutConnexion(ok) {
+  document.getElementById('connexion-statut').textContent = ok ? 'Connecté' : 'Erreur de connexion';
+  document.getElementById('status-dot').classList.toggle('erreur', !ok);
+}
+
+function majCompteur(collection, n) {
+  const el = document.getElementById(`count-${collection}`);
+  if (el) el.textContent = n;
+}
+
+// -----------------------------------------------------------------------
+// Chargement d'une catégorie
+// -----------------------------------------------------------------------
 async function chargerDonnees(collection) {
-    etatActuel = { collection, data: [] };
-    document.getElementById('titre-section').innerText = `Gestion des ${collection}`;
-    const contenuDiv = document.getElementById('contenu');
-    contenuDiv.innerHTML = "<p class='text-gray-400'>Chargement des données en cours...</p>";
+  state.collectionActuelle = collection;
 
-    try {
-        const response = await fetch(`/api/${collection}`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-        etatActuel.data = data;
-        afficherFormulaires(collection, data);
-    } catch (error) {
-        contenuDiv.innerHTML = `<p class="text-red-500 font-bold">Erreur de connexion à l'API (${error.message}). Vérifie que le serveur (web/server.js) tourne bien et que tu es connecté avec le bon identifiant/mot de passe.</p>`;
-        console.error("Erreur Fetch:", error);
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.collection === collection));
+
+  const titres = {
+    profils: ['Profils RP', 'Personnages joués sur le serveur.'],
+    maisons: ['Les Grandes Maisons', 'Maisons majeures, mineures et clans de Westeros.'],
+    regions: ['Régions de Westeros & Essos', 'Territoires, politiques et forces en présence.'],
+  };
+  document.getElementById('titre-section').textContent = titres[collection][0];
+  document.getElementById('sous-titre').textContent = titres[collection][1];
+
+  const searchWrap = document.getElementById('search-wrap');
+  searchWrap.hidden = false;
+  const rechercheInput = document.getElementById('recherche');
+  rechercheInput.value = '';
+  rechercheInput.placeholder = collection === 'profils' ? 'Rechercher un personnage...' : 'Rechercher un nom...';
+
+  const contenuDiv = document.getElementById('contenu');
+  contenuDiv.innerHTML = Array.from({ length: 5 }).map(() => '<div class="squelette"></div>').join('');
+
+  try {
+    const response = await fetch(`/api/${collection}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    state.cache[collection] = data;
+    majCompteur(collection, data.length);
+    renderListe(collection, data);
+    setStatutConnexion(true);
+  } catch (error) {
+    contenuDiv.innerHTML = `<div class="etat-vide"><div class="etat-vide-icone">⚠️</div><p>Erreur de connexion à l'API</p><span class="etat-vide-sub">${escapeHtml(error.message)} — vérifie que le serveur (web/server.js) tourne et que tu es bien authentifié.</span></div>`;
+    setStatutConnexion(false);
+    console.error('Erreur Fetch:', error);
+  }
+}
+
+function renderListe(collection, data) {
+  const contenuDiv = document.getElementById('contenu');
+  if (!data || data.length === 0) {
+    contenuDiv.innerHTML = "<div class='etat-vide'><div class='etat-vide-icone'>🕸️</div><p>Aucune donnée trouvée</p></div>";
+    return;
+  }
+  contenuDiv.innerHTML = data.map((item, i) => ligneHTML(collection, item, i)).join('') +
+    '<div class="aucun-resultat" id="aucun-resultat" hidden>Aucun résultat pour cette recherche.</div>';
+}
+
+function ligneHTML(collection, item, index) {
+  const delay = `${Math.min(index, 14) * 35}ms`;
+  if (collection === 'maisons') {
+    const typeLabel = (TYPES_MAISON.find(t => t.valeur === item.type) || { label: item.type }).label;
+    const typeBadge = item.type === 'majeure' ? 'badge-or' : item.type === 'clan' ? 'badge-vert' : 'badge-acier';
+    return `
+      <div class="ligne" style="--i:${delay}" data-nom="${escapeAttr((item.nom + ' ' + item.region).toLowerCase())}">
+        <div class="ligne-sigil">🏰</div>
+        <div class="ligne-corps">
+          <div class="ligne-nom">${escapeHtml(item.nom)}</div>
+          <div class="ligne-meta">
+            <span class="badge ${typeBadge}">${escapeHtml(typeLabel)}</span>
+            <span class="badge badge-defaut">${escapeHtml(item.region)}</span>
+          </div>
+        </div>
+        <button class="btn-modifier" onclick="ouvrirEditeur('maisons', '${jsAttr(item.key)}')">Modifier</button>
+      </div>`;
+  }
+  if (collection === 'regions') {
+    const richesseBadge = ['Élevée', 'Très élevée'].includes(item.richesse) ? 'badge-or'
+      : item.richesse === 'Moyenne' ? 'badge-acier' : 'badge-sang';
+    return `
+      <div class="ligne" style="--i:${delay}" data-nom="${escapeAttr((item.nom + ' ' + (item.maisonDirigeante || '')).toLowerCase())}">
+        <div class="ligne-sigil">🗺️</div>
+        <div class="ligne-corps">
+          <div class="ligne-nom">${escapeHtml(item.nom)}</div>
+          <div class="ligne-meta">
+            <span class="badge ${richesseBadge}">${escapeHtml(item.richesse || '—')}</span>
+            <span class="badge badge-defaut">${escapeHtml(item.maisonDirigeante || 'Aucune maison')}</span>
+          </div>
+        </div>
+        <button class="btn-modifier" onclick="ouvrirEditeur('regions', '${jsAttr(item.key)}')">Modifier</button>
+      </div>`;
+  }
+  // profils
+  const statutBadge = item.statut === 'Vivant' ? 'badge-vert' : item.statut === 'Mort' ? 'badge-sang'
+    : item.statut === 'Prisonnier' ? 'badge-acier' : 'badge-or';
+  return `
+    <div class="ligne" style="--i:${delay}" data-nom="${escapeAttr(((item.nomPrenom || item._id) + ' ' + (item.maisonName || '')).toLowerCase())}">
+      <div class="ligne-sigil">👤</div>
+      <div class="ligne-corps">
+        <div class="ligne-nom">${escapeHtml(item.nomPrenom || item._id)}</div>
+        <div class="ligne-meta">
+          <span class="badge ${statutBadge}">${escapeHtml(item.statut || '—')}</span>
+          <span class="badge badge-defaut">${escapeHtml(item.maisonName || 'Sans maison')}</span>
+        </div>
+      </div>
+      <button class="btn-modifier" onclick="ouvrirEditeur('profils', '${jsAttr(item._id)}')">Modifier</button>
+    </div>`;
+}
+
+function filtrerListe() {
+  const q = document.getElementById('recherche').value.trim().toLowerCase();
+  const lignes = document.querySelectorAll('.ligne');
+  let visibles = 0;
+  lignes.forEach(l => {
+    const correspond = !q || l.dataset.nom.includes(q);
+    l.classList.toggle('masquee', !correspond);
+    if (correspond) visibles += 1;
+  });
+  const aucun = document.getElementById('aucun-resultat');
+  if (aucun) aucun.hidden = visibles !== 0;
+}
+
+// -----------------------------------------------------------------------
+// Panneau d'édition
+// -----------------------------------------------------------------------
+function ouvrirEditeur(collection, id) {
+  const item = state.cache[collection].find(x => (collection === 'profils' ? x._id : x.key) === id);
+  if (!item) return;
+
+  state.itemActuel = { collection, id };
+  document.getElementById('panneau-eyebrow').textContent =
+    collection === 'maisons' ? 'Maison' : collection === 'regions' ? 'Région' : 'Profil';
+  document.getElementById('panneau-titre').textContent =
+    collection === 'profils' ? (item.nomPrenom || item._id) : item.nom;
+
+  const corps = document.getElementById('panneau-corps');
+  corps.innerHTML = collection === 'maisons' ? panneauMaison(item)
+    : collection === 'regions' ? panneauRegion(item)
+    : panneauProfil(item);
+
+  document.getElementById('overlay').classList.add('visible');
+  document.getElementById('panneau-edition').classList.add('ouvert');
+}
+
+function fermerPanneau() {
+  document.getElementById('overlay').classList.remove('visible');
+  document.getElementById('panneau-edition').classList.remove('ouvert');
+  state.itemActuel = null;
+}
+
+// ---------- Gabarits des formulaires ----------
+function tuileArmee(icone, label, id, valeur) {
+  return `
+    <div class="armee-tile">
+      <span class="armee-icone">${icone}</span>
+      <span class="armee-label">${label}</span>
+      <input type="number" id="${id}" value="${valeur ?? 0}" min="0">
+    </div>`;
+}
+
+function panneauMaison(m) {
+  const estClan = m.armee && m.armee.guerriers !== undefined;
+  const optionsType = TYPES_MAISON.map(t => `<option value="${t.valeur}" ${m.type === t.valeur ? 'selected' : ''}>${t.label}</option>`).join('')
+    + (TYPES_MAISON.some(t => t.valeur === m.type) ? '' : `<option value="${escapeAttr(m.type)}" selected>${escapeHtml(m.type)}</option>`);
+  const regionsDatalist = [...new Set(state.cache.regions.map(r => r.nom))];
+
+  const armeeHTML = estClan ? `
+      <div class="armee-grid">
+        ${tuileArmee('⚔️', 'Guerriers', 'f-armee-guerriers', m.armee.guerriers)}
+        ${tuileArmee('🏹', 'Archers', 'f-armee-archers', m.armee.archers)}
+        ${tuileArmee('🐺', 'Éclaireurs', 'f-armee-eclaireurs', m.armee.eclaireurs)}
+      </div>` : `
+      <div class="armee-grid">
+        ${tuileArmee('🛡️', 'Fantassins', 'f-armee-fantassins', m.armee?.fantassins)}
+        ${tuileArmee('🏹', 'Archers', 'f-armee-archers', m.armee?.archers)}
+        ${tuileArmee('🐎', 'Cavalerie', 'f-armee-cavalerie', m.armee?.cavalerie)}
+        ${tuileArmee('⛵', 'Flotte', 'f-armee-flotte', m.armee?.flotte)}
+      </div>
+      <div class="champ" style="margin-top:10px;">
+        <label for="f-armee-noteFlotte">Note sur la flotte (optionnel)</label>
+        <input type="text" id="f-armee-noteFlotte" value="${escapeAttr(m.armee?.noteFlotte || '')}" placeholder="ex : Redwyne">
+      </div>`;
+
+  return `
+    <div class="section-titre">🏛️ Fiche officielle</div>
+    <div class="grille-champs">
+      <div class="champ"><label for="f-nom">Nom de la maison</label><input type="text" id="f-nom" value="${escapeAttr(m.nom)}"></div>
+      <div class="champ"><label for="f-type">Type</label>
+        <select id="f-type">${optionsType}</select>
+      </div>
+      <div class="champ"><label for="f-region">Région</label>
+        <input type="text" id="f-region" value="${escapeAttr(m.region)}" list="dl-regions">
+        <datalist id="dl-regions">${regionsDatalist.map(r => `<option value="${escapeAttr(r)}">`).join('')}</datalist>
+      </div>
+      <div class="champ"><label for="f-croyance">Croyance</label><input type="text" id="f-croyance" value="${escapeAttr(m.croyance)}"></div>
+      <div class="champ"><label for="f-uniteSpeciale">Unité spéciale</label><input type="text" id="f-uniteSpeciale" value="${escapeAttr(m.uniteSpeciale)}"></div>
+      <div class="champ"><label for="f-renommee">Renommée (de base)</label><input type="number" id="f-renommee" value="${m.renommeeBase}"></div>
+      <div class="champ"><label for="f-argent">Argent (en nombre)</label><input type="number" id="f-argent" value="${Number.isFinite(m.argentBase) ? m.argentBase : 0}"></div>
+    </div>
+
+    <div class="section-titre">⚔️ Armée</div>
+    ${armeeHTML}
+
+    <div class="section-titre">⚡ État de partie (override)</div>
+    <p class="section-note">Si rempli, une valeur ici prend le pas sur la fiche officielle côté Discord (utile pour un ajustement temporaire sans toucher au canon).</p>
+    <div class="grille-champs">
+      <div class="champ"><label for="f-renommeeOverride">Renommée (override)</label><input type="number" id="f-renommeeOverride" value="${m.renommeeOverride ?? ''}" placeholder="—"></div>
+      <div class="champ"><label for="f-argentOverride">Argent (override)</label><input type="number" id="f-argentOverride" value="${m.argentOverride ?? ''}" placeholder="—"></div>
+    </div>
+    <div class="champ"><label for="f-leaderId">ID Discord du chef de maison</label><input type="text" id="f-leaderId" value="${escapeAttr(m.leaderId || '')}" placeholder="—"></div>
+
+    <div class="section-titre">📜 Historique</div>
+    ${historiqueHTML(m.historique)}
+
+    <div class="actions-panneau">
+      <button class="btn-principal" id="btn-enregistrer" onclick="sauvegarder()">Enregistrer les modifications</button>
+    </div>`;
+}
+
+function panneauRegion(r) {
+  const noArmee = r.armee === null || r.armee === undefined;
+  const maisonsDatalist = [...new Set(state.cache.maisons.map(m => m.nom))];
+  const climatsDatalist = [...new Set(state.cache.regions.map(x => x.climat).filter(Boolean))];
+  const optionsRichesse = NIVEAUX_RICHESSE.map(niv => `<option value="${niv}" ${r.richesse === niv ? 'selected' : ''}>${niv}</option>`).join('')
+    + (NIVEAUX_RICHESSE.includes(r.richesse) ? '' : `<option value="${escapeAttr(r.richesse)}" selected>${escapeHtml(r.richesse)}</option>`);
+
+  return `
+    <div class="section-titre">🏛️ Fiche officielle</div>
+    <div class="grille-champs">
+      <div class="champ"><label for="f-nom">Nom de la région</label><input type="text" id="f-nom" value="${escapeAttr(r.nom)}"></div>
+      <div class="champ"><label for="f-maisonDirigeante">Maison dirigeante</label>
+        <input type="text" id="f-maisonDirigeante" value="${escapeAttr(r.maisonDirigeante || '')}" list="dl-maisons">
+        <datalist id="dl-maisons"><option value="Aucune"><option value="La Couronne">${maisonsDatalist.map(n => `<option value="${escapeAttr(n)}">`).join('')}</datalist>
+      </div>
+      <div class="champ"><label for="f-capitale">Capitale</label><input type="text" id="f-capitale" value="${escapeAttr(r.capitale || '')}"></div>
+      <div class="champ"><label for="f-climat">Climat</label>
+        <input type="text" id="f-climat" value="${escapeAttr(r.climat || '')}" list="dl-climats">
+        <datalist id="dl-climats">${climatsDatalist.map(c => `<option value="${escapeAttr(c)}">`).join('')}</datalist>
+      </div>
+      <div class="champ"><label for="f-specialite">Spécialité</label><input type="text" id="f-specialite" value="${escapeAttr(r.specialite || '')}"></div>
+      <div class="champ"><label for="f-richesse">Richesse</label><select id="f-richesse">${optionsRichesse}</select></div>
+    </div>
+    <div class="champ"><label for="f-statutPolitique">Statut politique</label><textarea id="f-statutPolitique">${escapeHtml(r.statutPolitiqueBase || '')}</textarea></div>
+    <div class="champ" style="max-width:220px;"><label for="f-instabilite">Instabilité (0-100)</label><input type="number" id="f-instabilite" min="0" max="100" value="${r.instabiliteBase ?? 0}"></div>
+
+    <div class="section-titre">⚔️ Armée</div>
+    <div class="champ" style="display:flex; align-items:center; gap:8px; flex-direction:row;">
+      <input type="checkbox" id="f-armee-vide" style="width:auto;" ${noArmee ? 'checked' : ''} onchange="document.getElementById('bloc-armee-region').style.opacity = this.checked ? 0.35 : 1; document.getElementById('bloc-armee-region').style.pointerEvents = this.checked ? 'none' : 'auto';">
+      <label for="f-armee-vide" style="margin:0; text-transform:none; font-size:0.82rem; color:var(--text-secondary);">Aucune force armée recensée pour cette région</label>
+    </div>
+    <div id="bloc-armee-region" class="armee-grid" style="${noArmee ? 'opacity:0.35; pointer-events:none;' : ''}">
+      ${tuileArmee('🛡️', 'Troupes', 'f-armee-troupes', r.armee?.troupes)}
+      ${tuileArmee('🏹', 'Archers', 'f-armee-archers', r.armee?.archers)}
+      ${tuileArmee('🐎', 'Cavalerie', 'f-armee-cavalerie', r.armee?.cavalerie)}
+      ${tuileArmee('🐺', 'Éclaireurs', 'f-armee-eclaireurs', r.armee?.eclaireurs)}
+      ${tuileArmee('⛵', 'Flotte', 'f-armee-flotte', r.armee?.flotte)}
+    </div>
+
+    <div class="section-titre">⚡ État de partie (override)</div>
+    <p class="section-note">Si rempli, prend le pas sur la fiche officielle côté Discord.</p>
+    <div class="champ"><label for="f-statutOverride">Statut politique (override)</label><textarea id="f-statutOverride" placeholder="—">${escapeHtml(r.statutOverride || '')}</textarea></div>
+    <div class="champ" style="max-width:220px;"><label for="f-instabiliteOverride">Instabilité (override)</label><input type="number" id="f-instabiliteOverride" min="0" max="100" value="${r.instabiliteOverride ?? ''}" placeholder="—"></div>
+
+    <div class="section-titre">📜 Historique</div>
+    ${historiqueHTML(r.historique)}
+
+    <div class="actions-panneau">
+      <button class="btn-principal" id="btn-enregistrer" onclick="sauvegarder()">Enregistrer les modifications</button>
+    </div>`;
+}
+
+function panneauProfil(p) {
+  const optionsStatut = (state.statuts.length ? state.statuts : ['Vivant', 'Blessé', 'Prisonnier', 'Mort'])
+    .map(s => `<option value="${s}" ${p.statut === s ? 'selected' : ''}>${s}</option>`).join('');
+
+  return `
+    <div class="section-titre">🪶 Identité (lecture seule)</div>
+    <div class="grille-champs">
+      <div class="champ"><label>Nom</label><input type="text" value="${escapeAttr(p.nomPrenom || '')}" disabled></div>
+      <div class="champ"><label>Surnom</label><input type="text" value="${escapeAttr(p.surnom || '')}" disabled></div>
+      <div class="champ"><label>Maison</label><input type="text" value="${escapeAttr(p.maisonName || '')}" disabled></div>
+      <div class="champ"><label>Région</label><input type="text" value="${escapeAttr(p.regionName || '')}" disabled></div>
+      <div class="champ"><label>Rôle</label><input type="text" value="${escapeAttr(p.roleName || '')}" disabled></div>
+    </div>
+
+    <div class="section-titre">✒️ Fiche modifiable</div>
+    <div class="grille-champs">
+      <div class="champ"><label for="f-statut">Statut</label><select id="f-statut">${optionsStatut}</select></div>
+      <div class="champ"><label for="f-renommee">Renommée</label><input type="number" id="f-renommee" value="${p.renommee ?? 0}"></div>
+      <div class="champ"><label for="f-gardePersonnelle">Garde personnelle</label><input type="text" id="f-gardePersonnelle" value="${escapeAttr(p.gardePersonnelle || '')}"></div>
+      <div class="champ"><label for="f-boursePersonnelle">Bourse personnelle</label><input type="text" id="f-boursePersonnelle" value="${escapeAttr(p.boursePersonnelle || '')}"></div>
+      <div class="champ"><label for="f-allies">Alliés</label><input type="text" id="f-allies" value="${escapeAttr(p.allies || '')}"></div>
+      <div class="champ"><label for="f-rivaux">Rivaux</label><input type="text" id="f-rivaux" value="${escapeAttr(p.rivaux || '')}"></div>
+    </div>
+    <div class="champ"><label for="f-notes">Notes</label><textarea id="f-notes">${escapeHtml(p.notes || '')}</textarea></div>
+
+    <div class="actions-panneau">
+      <button class="btn-principal" id="btn-enregistrer" onclick="sauvegarder()">Enregistrer les modifications</button>
+    </div>`;
+}
+
+function historiqueHTML(historique) {
+  const lignes = (historique || []).map(h =>
+    `<li>${escapeHtml(h.texte)} <span>— ${escapeHtml(h.auteurLabel || 'Inconnu')}</span></li>`
+  ).join('');
+  return `
+    <ul class="historique-liste">${lignes || '<li class="historique-vide">Aucune entrée pour l\'instant.</li>'}</ul>
+    <div class="ligne-ajout">
+      <input type="text" id="f-nouvelle-entree" placeholder="Ajouter un évènement à l'historique...">
+      <button class="btn-secondaire" onclick="ajouterHistorique()">Ajouter</button>
+    </div>`;
+}
+
+// -----------------------------------------------------------------------
+// Sauvegarde
+// -----------------------------------------------------------------------
+function val(id) { const el = document.getElementById(id); return el ? el.value : undefined; }
+
+async function sauvegarder() {
+  if (!state.itemActuel) return;
+  const { collection, id } = state.itemActuel;
+  const btn = document.getElementById('btn-enregistrer');
+  const texteOriginal = btn.textContent;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>Enregistrement...';
+
+  try {
+    if (collection === 'maisons') {
+      const armee = {};
+      ['fantassins', 'archers', 'cavalerie', 'flotte', 'guerriers', 'eclaireurs'].forEach(champ => {
+        const v = val(`f-armee-${champ}`);
+        if (v !== undefined) armee[champ] = v;
+      });
+      const noteFlotte = val('f-armee-noteFlotte');
+      if (noteFlotte !== undefined) armee.noteFlotte = noteFlotte;
+
+      await Promise.all([
+        fetchJSON(`/api/maisons/${encodeURIComponent(id)}/base`, {
+          nom: val('f-nom'), type: val('f-type'), region: val('f-region'),
+          croyance: val('f-croyance'), uniteSpeciale: val('f-uniteSpeciale'),
+          renommee: val('f-renommee'), argent: val('f-argent'), armee,
+        }),
+        fetchJSON(`/api/maisons/${encodeURIComponent(id)}`, {
+          renommeeOverride: val('f-renommeeOverride'), argentOverride: val('f-argentOverride'), leaderId: val('f-leaderId'),
+        }),
+      ]);
+    } else if (collection === 'regions') {
+      const armeeVide = document.getElementById('f-armee-vide').checked;
+      const armee = armeeVide ? null : {
+        troupes: val('f-armee-troupes'), archers: val('f-armee-archers'),
+        cavalerie: val('f-armee-cavalerie'), eclaireurs: val('f-armee-eclaireurs'), flotte: val('f-armee-flotte'),
+      };
+      await Promise.all([
+        fetchJSON(`/api/regions/${encodeURIComponent(id)}/base`, {
+          nom: val('f-nom'), maisonDirigeante: val('f-maisonDirigeante'), capitale: val('f-capitale'),
+          climat: val('f-climat'), specialite: val('f-specialite'), richesse: val('f-richesse'),
+          statutPolitique: val('f-statutPolitique'), instabilite: val('f-instabilite'), armee,
+        }),
+        fetchJSON(`/api/regions/${encodeURIComponent(id)}`, {
+          statutOverride: val('f-statutOverride'), instabiliteOverride: val('f-instabiliteOverride'),
+        }),
+      ]);
+    } else {
+      await fetchJSON(`/api/profils/${encodeURIComponent(id)}`, {
+        statut: val('f-statut'), renommee: val('f-renommee'), gardePersonnelle: val('f-gardePersonnelle'),
+        boursePersonnelle: val('f-boursePersonnelle'), allies: val('f-allies'), rivaux: val('f-rivaux'), notes: val('f-notes'),
+      }, 'PATCH');
     }
+
+    toast('Modifications enregistrées avec succès.', 'succes');
+    await rafraichirEtRouvrir();
+  } catch (error) {
+    toast(`Échec de la sauvegarde : ${error.message}`, 'erreur');
+    console.error(error);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = texteOriginal;
+  }
 }
 
-function afficherFormulaires(collection, dataList) {
-    const contenuDiv = document.getElementById('contenu');
-    contenuDiv.innerHTML = '';
+async function ajouterHistorique() {
+  if (!state.itemActuel) return;
+  const { collection, id } = state.itemActuel;
+  if (collection === 'profils') return;
+  const input = document.getElementById('f-nouvelle-entree');
+  const texte = input.value.trim();
+  if (!texte) return;
 
-    if (!dataList || dataList.length === 0) {
-        contenuDiv.innerHTML = "<p class='text-gray-400'>Aucune donnée trouvée pour cette catégorie.</p>";
-        return;
-    }
-
-    dataList.forEach(item => {
-        const carte = document.createElement('div');
-        carte.className = "bg-gray-800 p-6 rounded-lg shadow-md border border-gray-700";
-        carte.innerHTML = collection === 'maisons' ? carteMaison(item)
-                         : collection === 'regions' ? carteRegion(item)
-                         : carteProfil(item);
-        contenuDiv.appendChild(carte);
-    });
+  try {
+    await fetchJSON(`/api/${collection}/${encodeURIComponent(id)}/historique`, { texte }, 'POST');
+    toast('Entrée ajoutée à l\'historique.', 'succes');
+    await rafraichirEtRouvrir();
+  } catch (error) {
+    toast(`Erreur : ${error.message}`, 'erreur');
+  }
 }
 
-// --- Petits helpers d'affichage ---
-function champLecture(label, value) {
-    return `
-        <div class="mb-3">
-            <label class="block text-xs font-bold text-gray-400 mb-1 uppercase tracking-wider">${label}</label>
-            <div class="bg-gray-700 text-gray-300 p-2 rounded w-full">${value ?? '—'}</div>
-        </div>`;
+async function rafraichirEtRouvrir() {
+  const { collection, id } = state.itemActuel;
+  const response = await fetch(`/api/${collection}`);
+  const data = await response.json();
+  state.cache[collection] = data;
+  renderListe(collection, data);
+  filtrerListe();
+  ouvrirEditeur(collection, id);
 }
 
-function champEdit(id, label, value, type = 'text') {
-    const val = value === null || value === undefined ? '' : String(value).replace(/"/g, '&quot;');
-    return `
-        <div class="mb-3">
-            <label class="block text-xs font-bold text-gray-400 mb-1 uppercase tracking-wider">${label}</label>
-            <input type="${type}" id="${id}" value="${val}" class="bg-gray-900 text-white border border-gray-600 focus:border-red-500 focus:outline-none p-2 rounded w-full">
-        </div>`;
+async function fetchJSON(url, body, method = 'PATCH') {
+  const response = await fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const texte = await response.text().catch(() => '');
+    throw new Error(`HTTP ${response.status} ${texte}`.trim());
+  }
+  return response.json();
 }
 
-function blocHistorique(collection, key, historique) {
-    const lignes = (historique || []).map(h =>
-        `<li class="text-sm text-gray-400 border-b border-gray-700 py-1">${h.texte} <span class="text-gray-600 italic">— ${h.auteurLabel || ''}</span></li>`
-    ).join('') || '<li class="text-sm text-gray-600 italic">Aucun historique.</li>';
-
-    return `
-        <div class="mt-4 border-t border-gray-700 pt-3">
-            <label class="block text-xs font-bold text-gray-400 mb-1 uppercase tracking-wider">Historique</label>
-            <ul class="mb-2 max-h-32 overflow-y-auto">${lignes}</ul>
-            <div class="flex gap-2">
-                <input type="text" id="hist-${collection}-${key}" placeholder="Ajouter une entrée..." class="bg-gray-900 text-white border border-gray-600 focus:border-red-500 focus:outline-none p-2 rounded flex-1 text-sm">
-                <button onclick="ajouterHistorique('${collection}', '${key}')" class="bg-gray-700 hover:bg-gray-600 text-white px-3 rounded text-sm font-semibold">Ajouter</button>
-            </div>
-        </div>`;
+// -----------------------------------------------------------------------
+// Notifications
+// -----------------------------------------------------------------------
+function toast(message, type = 'succes') {
+  const conteneur = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<span>${type === 'succes' ? '✅' : '⚠️'}</span><span>${escapeHtml(message)}</span>`;
+  conteneur.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('sortie');
+    setTimeout(() => el.remove(), 280);
+  }, 3200);
 }
 
-// --- Cartes par collection ---
-function carteMaison(m) {
-    return `
-        <h3 class="text-xl font-bold text-red-500 mb-3">${m.nom}</h3>
-        ${champLecture('Type', m.type)}
-        ${champLecture('Région', m.region)}
-        ${champLecture('Armée', (m.armeeLines || []).join('<br>'))}
-        ${champLecture('Renommée de base', m.renommeeBase)}
-        ${champLecture('Argent de base', m.argentBase)}
-        ${champEdit(`maisons-${m.key}-renommeeOverride`, 'Renommée (override)', m.renommeeOverride, 'number')}
-        ${champEdit(`maisons-${m.key}-argentOverride`, 'Argent (override)', m.argentOverride)}
-        ${champEdit(`maisons-${m.key}-leaderId`, 'ID Discord du chef', m.leaderId)}
-        <button onclick="sauvegarder('maisons', '${m.key}')" class="w-full bg-red-700 hover:bg-red-600 text-white p-3 rounded font-bold mt-4 transition">Enregistrer les modifications</button>
-        ${blocHistorique('maisons', m.key, m.historique)}
-    `;
+// -----------------------------------------------------------------------
+// Utilitaires d'échappement (évite l'injection HTML depuis les données)
+// -----------------------------------------------------------------------
+function escapeHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
-
-function carteRegion(r) {
-    return `
-        <h3 class="text-xl font-bold text-red-500 mb-3">${r.nom}</h3>
-        ${champLecture('Maison dirigeante', r.maisonDirigeante)}
-        ${champLecture('Capitale', r.capitale)}
-        ${champLecture('Richesse', r.richesse)}
-        ${champLecture('Spécialité', r.specialite)}
-        ${champLecture('Climat', r.climat)}
-        ${champLecture('Armée', (r.armeeLines || []).join('<br>'))}
-        ${champLecture('Statut politique de base', r.statutPolitiqueBase)}
-        ${champLecture('Instabilité de base', r.instabiliteBase)}
-        ${champEdit(`regions-${r.key}-statutOverride`, 'Statut politique (override)', r.statutOverride)}
-        ${champEdit(`regions-${r.key}-instabiliteOverride`, 'Instabilité (override)', r.instabiliteOverride, 'number')}
-        <button onclick="sauvegarder('regions', '${r.key}')" class="w-full bg-red-700 hover:bg-red-600 text-white p-3 rounded font-bold mt-4 transition">Enregistrer les modifications</button>
-        ${blocHistorique('regions', r.key, r.historique)}
-    `;
-}
-
-function carteProfil(p) {
-    return `
-        <h3 class="text-xl font-bold text-red-500 mb-3">${p.nomPrenom || p._id}</h3>
-        ${champLecture('Surnom', p.surnom)}
-        ${champLecture('Maison', p.maisonName)}
-        ${champLecture('Région', p.regionName)}
-        ${champLecture('Rôle', p.roleName)}
-        ${champEdit(`profils-${p._id}-statut`, 'Statut', p.statut)}
-        ${champEdit(`profils-${p._id}-gardePersonnelle`, 'Garde personnelle', p.gardePersonnelle)}
-        ${champEdit(`profils-${p._id}-boursePersonnelle`, 'Bourse personnelle', p.boursePersonnelle)}
-        ${champEdit(`profils-${p._id}-allies`, 'Alliés', p.allies)}
-        ${champEdit(`profils-${p._id}-rivaux`, 'Rivaux', p.rivaux)}
-        ${champEdit(`profils-${p._id}-renommee`, 'Renommée', p.renommee, 'number')}
-        ${champEdit(`profils-${p._id}-notes`, 'Notes', p.notes)}
-        <button onclick="sauvegarder('profils', '${p._id}')" class="w-full bg-red-700 hover:bg-red-600 text-white p-3 rounded font-bold mt-4 transition">Enregistrer les modifications</button>
-    `;
-}
-
-// --- Sauvegarde ---
-async function sauvegarder(collection, id) {
-    const prefix = `${collection}-${id}-`;
-    const inputs = document.querySelectorAll(`[id^="${prefix}"]`);
-    const nouvellesDonnees = {};
-
-    inputs.forEach(input => {
-        const key = input.id.slice(prefix.length);
-        nouvellesDonnees[key] = input.value;
-    });
-
-    try {
-        const response = await fetch(`/api/${collection}/${id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(nouvellesDonnees)
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        await response.json();
-        alert("Mise à jour réussie !");
-        chargerDonnees(collection); // on recharge pour voir les valeurs à jour
-    } catch (error) {
-        alert("Erreur lors de la sauvegarde. Vérifie la console (F12).");
-        console.error("Erreur PATCH:", error);
-    }
-}
-
-async function ajouterHistorique(collection, key) {
-    const input = document.getElementById(`hist-${collection}-${key}`);
-    const texte = input.value.trim();
-    if (!texte) return;
-
-    try {
-        const response = await fetch(`/api/${collection}/${key}/historique`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ texte })
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        chargerDonnees(collection);
-    } catch (error) {
-        alert("Erreur lors de l'ajout à l'historique.");
-        console.error("Erreur historique:", error);
-    }
-}
+function escapeAttr(str) { return escapeHtml(str); }
+function jsAttr(str) { return String(str ?? '').replace(/'/g, "\\'"); }

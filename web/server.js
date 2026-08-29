@@ -2,6 +2,7 @@
 // Réutilise directement les modules du bot (Data/...) pour ne jamais dupliquer la
 // logique ni risquer que le site et le bot voient des données différentes.
 require('dotenv').config();
+const fs = require('fs');
 const path = require('path');
 const express = require('express');
 
@@ -31,6 +32,27 @@ const {
 
 const app = express();
 app.use(express.json());
+
+// --- Écriture des données de base sur disque -------------------------------
+// Les fiches de maisons/régions (Data/json/*.json) sont la source de vérité
+// "canon". Le site peut maintenant les éditer intégralement : on modifie le
+// tableau en mémoire (MAISONS / REGIONS, déjà chargé par Data/maisons.js et
+// Data/regions.js) puis on réécrit le fichier JSON correspondant, pour que
+// le bot voie les mêmes données au prochain redémarrage.
+const MAISONS_JSON_PATH = path.join(__dirname, '..', 'Data', 'json', 'maisons.json');
+const REGIONS_JSON_PATH = path.join(__dirname, '..', 'Data', 'json', 'regions.json');
+
+function saveMaisonsToDisk() {
+  fs.writeFileSync(MAISONS_JSON_PATH, `${JSON.stringify(MAISONS, null, 2)}\n`, 'utf-8');
+}
+function saveRegionsToDisk() {
+  fs.writeFileSync(REGIONS_JSON_PATH, `${JSON.stringify(REGIONS, null, 2)}\n`, 'utf-8');
+}
+function num(v, fallback = 0) {
+  if (v === '' || v === null || v === undefined) return fallback;
+  const n = Number(v);
+  return Number.isNaN(n) ? fallback : n;
+}
 
 // --- Authentification basique (identifiants dans .env, jamais dans le code) ---
 const ADMIN_USER = process.env.ADMIN_USER;
@@ -100,11 +122,46 @@ app.patch('/api/maisons/:key', async (req, res) => {
     const { renommeeOverride, argentOverride, leaderId } = req.body;
     const fields = {};
     if (renommeeOverride !== undefined) fields.renommeeOverride = renommeeOverride === '' ? null : Number(renommeeOverride);
-    if (argentOverride !== undefined) fields.argentOverride = argentOverride === '' ? null : argentOverride;
+    if (argentOverride !== undefined) fields.argentOverride = argentOverride === '' ? null : Number(argentOverride);
     if (Object.keys(fields).length) await updateMaisonOverrides(key, fields);
     if (leaderId !== undefined) await setLeader(key, leaderId === '' ? null : leaderId);
 
     res.json(await serializeMaison(MAISONS.find(m => m.key === key)));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Édition complète de la fiche "canon" d'une maison (tout, sauf sa clé
+// stable `key`, qu'on ne touche jamais pour ne pas casser l'état lié en base).
+app.patch('/api/maisons/:key/base', async (req, res) => {
+  try {
+    const { key } = req.params;
+    const maison = MAISONS.find(m => m.key === key);
+    if (!maison) return res.status(404).json({ error: 'Maison inconnue' });
+
+    const b = req.body || {};
+    if (b.nom !== undefined) maison.nom = String(b.nom);
+    if (b.type !== undefined) maison.type = String(b.type);
+    if (b.region !== undefined) maison.region = String(b.region);
+    if (b.croyance !== undefined) maison.croyance = String(b.croyance);
+    if (b.uniteSpeciale !== undefined) maison.uniteSpeciale = String(b.uniteSpeciale);
+    if (b.renommee !== undefined) maison.renommee = num(b.renommee, maison.renommee);
+    if (b.argent !== undefined) maison.argent = num(b.argent, 0);
+
+    if (b.armee && typeof b.armee === 'object') {
+      const a = maison.armee || {};
+      ['fantassins', 'archers', 'cavalerie', 'guerriers', 'eclaireurs'].forEach((champ) => {
+        if (b.armee[champ] !== undefined) a[champ] = num(b.armee[champ], 0);
+      });
+      if (b.armee.flotte !== undefined) a.flotte = b.armee.flotte === '' ? null : num(b.armee.flotte, 0);
+      if (b.armee.noteFlotte !== undefined) a.noteFlotte = b.armee.noteFlotte || undefined;
+      maison.armee = a;
+    }
+
+    saveMaisonsToDisk();
+    res.json(await serializeMaison(maison));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -171,6 +228,42 @@ app.patch('/api/regions/:key', async (req, res) => {
     if (Object.keys(fields).length) await updateRegionOverrides(key, fields);
 
     res.json(await serializeRegion(REGIONS.find(r => r.key === key)));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Édition complète de la fiche "canon" d'une région (tout, sauf sa clé stable `key`).
+app.patch('/api/regions/:key/base', async (req, res) => {
+  try {
+    const { key } = req.params;
+    const region = REGIONS.find(r => r.key === key);
+    if (!region) return res.status(404).json({ error: 'Région inconnue' });
+
+    const b = req.body || {};
+    if (b.nom !== undefined) region.nom = String(b.nom);
+    if (b.maisonDirigeante !== undefined) region.maisonDirigeante = String(b.maisonDirigeante);
+    if (b.capitale !== undefined) region.capitale = String(b.capitale);
+    if (b.statutPolitique !== undefined) region.statutPolitique = String(b.statutPolitique);
+    if (b.instabilite !== undefined) region.instabilite = num(b.instabilite, region.instabilite);
+    if (b.richesse !== undefined) region.richesse = String(b.richesse);
+    if (b.specialite !== undefined) region.specialite = String(b.specialite);
+    if (b.climat !== undefined) region.climat = String(b.climat);
+
+    if (b.armee === null) {
+      region.armee = null;
+    } else if (b.armee && typeof b.armee === 'object') {
+      const a = region.armee || {};
+      ['troupes', 'archers', 'cavalerie', 'eclaireurs'].forEach((champ) => {
+        if (b.armee[champ] !== undefined) a[champ] = num(b.armee[champ], 0);
+      });
+      if (b.armee.flotte !== undefined) a.flotte = b.armee.flotte === '' ? null : num(b.armee.flotte, 0);
+      region.armee = a;
+    }
+
+    saveRegionsToDisk();
+    res.json(await serializeRegion(region));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
