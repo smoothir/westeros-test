@@ -45,8 +45,13 @@
       </nav>
 
       <div class="sidebar-footer">
-        <span class="status-dot" id="status-dot"></span>
-        <span id="connexion-statut">Prêt</span>
+        <button class="btn-secondaire btn-sync" id="btn-sync" onclick="synchroniser()">
+          <span id="sync-icone">🔄</span> Synchroniser
+        </button>
+        <div class="statut-ligne">
+          <span class="status-dot" id="status-dot"></span>
+          <span id="connexion-statut">Prêt</span>
+        </div>
       </div>
     </aside>
 

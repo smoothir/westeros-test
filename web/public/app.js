@@ -473,6 +473,39 @@ async function fetchJSON(url, body, method = 'PATCH') {
 }
 
 // -----------------------------------------------------------------------
+// Synchronisation manuelle (bouton sidebar)
+// -----------------------------------------------------------------------
+// Ne "récupère" pas des données depuis le bot : le site et le bot lisent déjà
+// la même base Mongo en direct. Ce bouton s'assure juste que chaque maison/
+// région définie dans les fichiers JSON a bien un document d'état en base
+// (utile après l'ajout d'une nouvelle maison/région, par ex.), sans jamais
+// écraser un état déjà existant.
+async function synchroniser() {
+  const btn = document.getElementById('btn-sync');
+  const icone = document.getElementById('sync-icone');
+  btn.disabled = true;
+  icone.textContent = '';
+  icone.classList.add('tournant');
+  icone.textContent = '🔄';
+
+  try {
+    const result = await fetchJSON('/api/sync', {}, 'POST');
+    toast(result.message || 'Synchronisation terminée.', 'succes');
+
+    // Si une section est déjà ouverte, on la recharge pour refléter d'éventuels ajouts
+    if (state.collectionActuelle) {
+      await chargerDonnees(state.collectionActuelle);
+    }
+  } catch (error) {
+    toast(`Échec de la synchronisation : ${error.message}`, 'erreur');
+    console.error(error);
+  } finally {
+    btn.disabled = false;
+    icone.classList.remove('tournant');
+  }
+}
+
+// -----------------------------------------------------------------------
 // Notifications
 // -----------------------------------------------------------------------
 function toast(message, type = 'succes') {
